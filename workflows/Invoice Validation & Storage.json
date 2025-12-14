@@ -1,0 +1,1268 @@
+{
+  "name": "Invoice Validation & Storage",
+  "nodes": [
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=# Role\nYou are an AI model that detects duplicates of invoices.\nYou compare the \"Current Invoice\" with a \"Database of Invoices\".\n\n# Input Data\nCurrent invoice JSON:\n{{ JSON.stringify($('Invoice Validator').first().json) }}\n\n**List of previously stored invoices**:\n{{ JSON.stringify($items(\"Get Existing Invoices\").map(i => i.json), null, 2) }}\n\nIMPORTANT: If the **list of previously stored invoices** above is empty ([]), this means the database has no invoices yet. \nIn that case, you MUST return: \n{\"is_duplicate\": false, \"similarity_score\": 0, \"matched_invoice_number\": null, \"reason\": \"First invoice in database\"}\n\n# Requirements\nCriteria for duplicates:\n- Invoice numbers match exactly, OR\n- Buyer + seller + amounts match AND similarity_score ≥ 85, OR\n- Invoice number has minor differences (typos, spacing, missing slashes) BUT all other data matches strongly.\n\nCriteria for near-duplicates:\n- Score higher when fields match closely: invoice_number, company_name_invoice_issuer, company_name_invoice_recipient, net_amount, gross_amount, vat_rate, issue_date.\n- Similarity score must reflect how many fields align.\n\nImportant rules:\n- Be strict about numeric amounts.\n- Allow small variations in invoice number formatting.\n- If nothing matches strongly, similarity_score ≤ 40.\n\n\n# Structure example:\n{\n  \"is_duplicate\": true,\n  \"similarity_score\": 95,\n  \"matched_invoice_number\": \"FAK/003\",\n  \"reason\": \"Exact match found in database.\"\n}\n\nIf no match is found:\n{\n  \"is_duplicate\": false,\n  \"similarity_score\": 0,\n  \"matched_invoice_number\": null,\n  \"reason\": \"No matching invoice found.\"\n}\n\n",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        -224,
+        -16
+      ],
+      "id": "ad376efe-1a0a-4a78-a994-268447e12db8",
+      "name": "Duplicate Detector"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        176
+      ],
+      "id": "608ba95f-a119-4133-9438-3b7cc6642a2d",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "hsltzUFSYRibxBnf",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map(item => {\n  const data = item.json;\n  const errors = [];\n  const warnings = [];\n  let isValid = true;\n\n  // MATHEMATICAL VALIDATION ===\n\n  // Convert to numbers\n  const netAmount = parseFloat(data.net_amount || 0);\n  const grossAmount = parseFloat(data.gross_amount || 0);\n  const vatRate = parseFloat(data.vat_rate || 0);\n\n  // Check if net + VAT = gross\n  const calculatedVat = netAmount * (vatRate / 100);\n  const calculatedGross = netAmount + calculatedVat;\n  const grossDifference = Math.abs(grossAmount - calculatedGross);\n\n  if (grossDifference > 0.02) { // 2 cents tolerance for rounding\n    errors.push({\n      field: 'gross_amount',\n      message: `Gross amount mismatch: Expected ${calculatedGross.toFixed(2)}, got ${grossAmount.toFixed(2)}`,\n      expected: calculatedGross.toFixed(2),\n      actual: grossAmount.toFixed(2),\n      difference: grossDifference.toFixed(2)\n    });\n    isValid = false;\n  }\n\n  // Validate invoice line items\n  if (Array.isArray(data.product_name)) {\n    let calculatedNetTotal = 0;\n\n    for (let i = 0; i < data.product_name.length; i++) {\n      const unitPrice = parseFloat(data.unit_price[i] || 0);\n      const quantity = parseFloat(data.quantity[i] || 0);\n      const value = parseFloat(data.value[i] || 0);\n      const calculatedValue = unitPrice * quantity;\n      const valueDifference = Math.abs(value - calculatedValue);\n\n      if (valueDifference > 0.02) {\n        errors.push({\n          field: `value[${i}]`,\n          product: data.product_name[i],\n          message: `Line item ${i + 1} calculation error: ${unitPrice} × ${quantity} should be ${calculatedValue.toFixed(2)}, got ${value.toFixed(2)}`,\n          expected: calculatedValue.toFixed(2),\n          actual: value.toFixed(2)\n        });\n        isValid = false;\n      }\n\n      calculatedNetTotal += value;\n    }\n\n    // Check if sum of items = net amount\n    const netDifference = Math.abs(netAmount - calculatedNetTotal);\n    if (netDifference > 0.02) {\n      errors.push({\n        field: 'net_amount',\n        message: `Net amount sum mismatch: Sum of line items is ${calculatedNetTotal.toFixed(2)}, but net_amount is ${netAmount.toFixed(2)}`,\n        expected: calculatedNetTotal.toFixed(2),\n        actual: netAmount.toFixed(2),\n        difference: netDifference.toFixed(2)\n      });\n      isValid = false;\n    }\n  }\n\n   // REQUIRED FIELDS VALIDATION\n  const requiredFields = [\n    'company_name_invoice_issuer',\n    'company_name_invoice_recipient',\n    'invoice_number',\n    'net_amount',\n    'gross_amount',\n    'vat_rate'\n  ];\n\n  requiredFields.forEach(field => {\n    if (!data[field] || data[field] === '' || data[field] === null) {\n      errors.push({\n        field: field,\n        message: `Required field \"${field}\" is missing or empty`\n      });\n      isValid = false;\n    }\n  });\n\n  // AMOUNT VALIDATION (MUST BE POSITIVE)\n\n  if (netAmount <= 0) {\n    errors.push({\n      field: 'net_amount',\n      message: `Net amount must be positive, got: ${netAmount}`,\n      value: netAmount\n    });\n    isValid = false;\n  }\n\n  if (grossAmount <= 0) {\n    errors.push({\n      field: 'gross_amount',\n      message: `Gross amount must be positive, got: ${grossAmount}`,\n      value: grossAmount\n    });\n    isValid = false;\n  }\n\n  // VAT RATE VALIDATION\n\n  const validVatRates = [0, 5, 8, 23]; // Polish VAT rates\n  if (!validVatRates.includes(vatRate)) {\n    warnings.push({\n      field: 'vat_rate',\n      message: `Unusual VAT rate: ${vatRate}% (expected: 0, 5, 8, or 23)`,\n      value: vatRate\n    });\n  }\n\n  // PRODUCT ARRAYS VALIDATION\n\n  if (Array.isArray(data.product_name)) {\n    const productCount = data.product_name.length;\n    const unitPriceCount = data.unit_price?.length || 0;\n    const quantityCount = data.quantity?.length || 0;\n    const valueCount = data.value?.length || 0;\n\n    if (productCount !== unitPriceCount || productCount !== quantityCount || productCount !== valueCount) {\n      errors.push({\n        field: 'product_arrays',\n        message: `Array length mismatch: products=${productCount}, prices=${unitPriceCount}, quantities=${quantityCount}, values=${valueCount}`,\n        productCount,\n        unitPriceCount,\n        quantityCount,\n        valueCount\n      });\n      isValid = false;\n    }\n  }\n\n  // RETURN RESULT\n\n  return {\n    json: {\n      ...data,\n      validation: {\n        isValid: isValid,\n        hasWarnings: warnings.length > 0,\n        errorCount: errors.length,\n        warningCount: warnings.length,\n        errors: errors,\n        warnings: warnings,\n        validatedAt: new Date().toISOString()\n      }\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        -48
+      ],
+      "id": "7fa83e73-0f85-4725-b269-3ebe4b81b069",
+      "name": "Invoice Validator"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Get data directly from Invoice Validator\nconst invoiceNode = $('Invoice Validator').first();\n\n // Debug - uncomment to see structure\n// console.log(JSON.stringify(invoiceNode.json, null, 2));\n\n// Safety check: if no data\nif (!invoiceNode || !invoiceNode.json) {\n  return [{\n    json: {\n      error: \"No data from Invoice Validator\",\n      debug: \"invoiceNode is null or has no json\"\n    }\n  }];\n}\n\n\nconst data = invoiceNode.json.body;\n\n// Safety check: if no body\nif (!data) {\n  return [{\n    json: {\n      error: \"No body in Invoice Validator data\",\n      debug: JSON.stringify(invoiceNode.json)\n    }\n  }];\n}\n\nconst output = [];\n\n// Helper function to convert single values to arrays\nconst toArray = (val) => {\n    if (Array.isArray(val)) return val;\n    if (val === undefined || val === null || val === '') return [];\n    return [val];\n};\n\n// Prepare data\nconst products = toArray(data.product_name);\nconst prices = toArray(data.unit_price);\nconst quantities = toArray(data.quantity);\nconst values = toArray(data.value);\n\n// Check if there are products\nif (products.length === 0) {\n  return [{\n    json: {\n      error: \"No products found\",\n      invoice_number: data.invoice_number,\n      debug: {\n        product_name: data.product_name,\n        hasProducts: !!data.product_name\n      }\n    }\n  }];\n}\n\nconst count = products.length;\n\n// Generate rows\nfor (let i = 0; i < count; i++) {\n    output.push({\n        json: {\n            invoice_number: data.invoice_number,\n            product_name: products[i],\n            unit_price: prices[i],\n            quantity: quantities[i],\n            value: values[i]\n        }\n    });\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        -208
+      ],
+      "id": "c7ea0c9f-774a-4ad0-a2bc-f42aacf6c4f0",
+      "name": "Split Invoice Items"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "755c7f0f-2637-4b41-a569-b480f8a94700",
+              "leftValue": "={{ $('Invoice Validator').item.json.validation.isValid }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        32,
+        224
+      ],
+      "id": "fdcd5714-0847-43c7-8d12-8586a3e4ed35",
+      "name": "Check Validation"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0",
+          "mode": "list",
+          "cachedResultName": "OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "company_name_invoice_issuer": "={{ $('Invoice Validator').item.json.body.company_name_invoice_issuer }}",
+            "company_name_invoice_recipient": "={{ $('Invoice Validator').item.json.body.company_name_invoice_recipient }}",
+            "invoice_recipient_company_address": "={{ $('Invoice Validator').item.json.body.invoice_recipient_company_address }}",
+            "tax_identification_issuer": "={{ $('Invoice Validator').item.json.body.tax_identification_issuer }}",
+            "tax_identification_recipient": "={{ $('Invoice Validator').item.json.body.tax_identification_recipient }}",
+            "invoice_issue_date": "={{ $('Invoice Validator').item.json.body.invoice_issue_date }}",
+            "net_amount": "={{ $('Invoice Validator').item.json.body.net_amount }}",
+            "gross_amount": "={{ $('Invoice Validator').item.json.body.gross_amount }}",
+            "vat_rate": "={{ $('Invoice Validator').item.json.body.vat_rate }}",
+            "product_name": "={{ $('Invoice Validator').item.json.body.product_name }}",
+            "unit_price": "={{ $('Invoice Validator').item.json.body.unit_price }}",
+            "quantity": "={{ $('Invoice Validator').item.json.body.quantity }}",
+            "value": "={{ $('Invoice Validator').item.json.body.value }}",
+            "invoice_number": "={{ $('Invoice Validator').item.json.body.invoice_number }}",
+            "invoice_issuer_company_address": "={{ $('Invoice Validator').item.json.body.invoice_issuer_company_address }}"
+          },
+          "matchingColumns": [
+            "invoice_number"
+          ],
+          "schema": [
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "company_name_invoice_issuer",
+              "displayName": "company_name_invoice_issuer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_name_invoice_recipient",
+              "displayName": "company_name_invoice_recipient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_issuer_company_address",
+              "displayName": "invoice_issuer_company_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "invoice_recipient_company_address",
+              "displayName": "invoice_recipient_company_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tax_identification_issuer",
+              "displayName": "tax_identification_issuer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tax_identification_recipient",
+              "displayName": "tax_identification_recipient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_issue_date",
+              "displayName": "invoice_issue_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "net_amount",
+              "displayName": "net_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "gross_amount",
+              "displayName": "gross_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "vat_rate",
+              "displayName": "vat_rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product_name",
+              "displayName": "product_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "unit_price",
+              "displayName": "unit_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "quantity",
+              "displayName": "quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "value",
+              "displayName": "value",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        704,
+        240
+      ],
+      "id": "0587d46d-2984-4a3f-bb35-e76c77bba78d",
+      "name": "Save to Main Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "74OtQSEyoA0ZgH3q",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0",
+          "mode": "list",
+          "cachedResultName": "OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1418065820,
+          "mode": "list",
+          "cachedResultName": "Failed OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit#gid=1418065820"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "company_name_invoice_issuer": "={{ $('Invoice Validator').item.json.body.company_name_invoice_issuer }}",
+            "company_name_invoice_recipient": "={{ $('Invoice Validator').item.json.body.company_name_invoice_recipient }}",
+            "invoice_recipient_company_address": "={{ $('Invoice Validator').item.json.body.invoice_recipient_company_address }}",
+            "tax_identification_issuer": "={{ $('Invoice Validator').item.json.body.tax_identification_issuer }}",
+            "tax_identification_recipient": "={{ $('Invoice Validator').item.json.body.tax_identification_recipient }}",
+            "invoice_issue_date": "={{ $('Invoice Validator').item.json.body.invoice_issue_date }}",
+            "net_amount": "={{ $('Invoice Validator').item.json.body.net_amount }}",
+            "gross_amount": "={{ $('Invoice Validator').item.json.body.gross_amount }}",
+            "vat_rate": "={{ $('Invoice Validator').item.json.body.vat_rate }}",
+            "product_name": "={{ $('Invoice Validator').item.json.body.product_name }}",
+            "unit_price": "={{ $('Invoice Validator').item.json.body.unit_price }}",
+            "quantity": "={{ $('Invoice Validator').item.json.body.quantity }}",
+            "value": "={{ $('Invoice Validator').item.json.body.value }}",
+            "invoice_number": "={{ $('Invoice Validator').item.json.body.invoice_number }}",
+            "invoice_issuer_company_address": "={{ $('Invoice Validator').item.json.body.invoice_issuer_company_address }}"
+          },
+          "matchingColumns": [
+            "invoice_number"
+          ],
+          "schema": [
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "company_name_invoice_issuer",
+              "displayName": "company_name_invoice_issuer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_name_invoice_recipient",
+              "displayName": "company_name_invoice_recipient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_issuer_company_address",
+              "displayName": "invoice_issuer_company_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "invoice_recipient_company_address",
+              "displayName": "invoice_recipient_company_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tax_identification_issuer",
+              "displayName": "tax_identification_issuer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tax_identification_recipient",
+              "displayName": "tax_identification_recipient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_issue_date",
+              "displayName": "invoice_issue_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "net_amount",
+              "displayName": "net_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "gross_amount",
+              "displayName": "gross_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "vat_rate",
+              "displayName": "vat_rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product_name",
+              "displayName": "product_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "unit_price",
+              "displayName": "unit_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "quantity",
+              "displayName": "quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "value",
+              "displayName": "value",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        240
+      ],
+      "id": "4d447460-49cf-434a-b630-fb78291638af",
+      "name": "Save to Failed Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "74OtQSEyoA0ZgH3q",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "sebkaz.n8n@gmail.com",
+        "subject": "=Duplicate Invoice Detected - {{ $('Invoice Validator').item.json.body.invoice_number }}",
+        "message": "=ALERT: Duplicate Invoice Detected!\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   DUPLICATE DETECTION\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nStatus:            DUPLICATE FOUND\nSimilarity Score:  {{ $json.similarity_score || 'N/A' }}%\nMatched Invoice:   {{ $json.matched_invoice_number || 'N/A' }}\nReason:            {{ $json.reason || 'Duplicate detected in database' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   SUBMITTED INVOICE DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nInvoice Number:    {{ $('Invoice Validator').item.json.body.invoice_number || 'N/A' }}\nIssue Date:        {{ $('Invoice Validator').item.json.body.invoice_issue_date || 'N/A' }}\nNet Amount:        {{ $('Invoice Validator').item.json.body.net_amount || 'N/A' }} PLN\nGross Amount:      {{ $('Invoice Validator').item.json.body.gross_amount || 'N/A' }} PLN\nVAT Rate:          {{ $('Invoice Validator').item.json.body.vat_rate || 'N/A' }}%\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   ISSUER DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nTax ID (NIP):      {{ $('Invoice Validator').item.json.body.tax_identification_issuer || 'N/A' }}\nCompany Name:      {{ $('Invoice Validator').item.json.body.company_name_invoice_issuer || 'N/A' }}\nAddress:           {{ $('Invoice Validator').item.json.body.invoice_issuer_company_address || 'N/A' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   RECIPIENT DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nTax ID (NIP):      {{ $('Invoice Validator').item.json.body.tax_identification_recipient || 'N/A' }}\nCompany Name:      {{ $('Invoice Validator').item.json.body.company_name_invoice_recipient || 'N/A' }}\nAddress:           {{ $('Invoice Validator').item.json.body.invoice_recipient_company_address || 'N/A' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   ACTION TAKEN\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nInvoice REJECTED - Already exists in database  \n   Check if this is a legitimate resubmission.  \n   Review the original invoice: {{ $json.matched_invoice_number || 'N/A' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAuto-generated: {{ $now.format('yyyy-MM-dd HH:mm:ss') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        624,
+        -384
+      ],
+      "id": "3eb4f081-7ff7-4fc2-9449-207d6d0cd60b",
+      "name": "Notify Duplicate Found",
+      "webhookId": "8f1ac9b0-8dd2-4f7f-bd6f-6cbcfff45436",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gOpSSh0fESEacjJf",
+          "name": "Gmail account 5"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0",
+          "mode": "list",
+          "cachedResultName": "OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -448,
+        -48
+      ],
+      "id": "b9b19cdd-8d91-4814-aa72-7fd3b651a239",
+      "name": "Get Existing Invoices",
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "74OtQSEyoA0ZgH3q",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0b72b26e-d381-4c90-a902-b416162e9f20",
+              "leftValue": "={{ $items(\"Duplicate Detector\")[0].json.is_duplicate || \n   $items(\"Duplicate Detector\")[0].json.similarity_score >= 85 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        -224
+      ],
+      "id": "4422e6df-2fd8-4664-bcbb-1d9b2f3868e1",
+      "name": "Check Duplicate"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -336,
+        -176
+      ],
+      "id": "0ba5ddbb-0d04-4247-90b3-7d24dfd1c7ad",
+      "name": "Merge Invoice Data"
+    },
+    {
+      "parameters": {
+        "sendTo": "sebkaz.n8n@gmail.com",
+        "subject": "=Validation Failed - Invoice {{ $('Invoice Validator').item.json.body.invoice_number || 'UNKNOWN' }}",
+        "message": "=ALERT: Invoice Validation Failed!\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   VALIDATION ERRORS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n{{ $('Invoice Validator').item.json.validation.errors.map(e => 'X ' + e.field + ': ' + e.message).join('\\n') }}\n\nError Count:       {{ $('Invoice Validator').item.json.validation.errorCount }}\nWarning Count:     {{ $('Invoice Validator').item.json.validation.warningCount }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   INVOICE DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nInvoice Number:    {{ $('Invoice Validator').item.json.body.invoice_number || 'N/A' }}\nIssue Date:        {{ $('Invoice Validator').item.json.body.invoice_issue_date || 'N/A' }}\nNet Amount:        {{ $('Invoice Validator').item.json.body.net_amount || 'N/A' }} PLN\nGross Amount:      {{ $('Invoice Validator').item.json.body.gross_amount || 'N/A' }} PLN\nVAT Rate:          {{ $('Invoice Validator').item.json.body.vat_rate || 'N/A' }}%\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   ISSUER DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nTax ID (NIP):      {{ $('Invoice Validator').item.json.body.tax_identification_issuer || 'N/A' }}\nCompany Name:      {{ $('Invoice Validator').item.json.body.company_name_invoice_issuer || 'N/A' }}\nAddress:           {{ $('Invoice Validator').item.json.body.invoice_issuer_company_address || 'N/A' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   RECIPIENT DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nTax ID (NIP):      {{ $('Invoice Validator').item.json.body.tax_identification_recipient || 'N/A' }}\nCompany Name:      {{ $('Invoice Validator').item.json.body.company_name_invoice_recipient || 'N/A' }}\nAddress:           {{ $('Invoice Validator').item.json.body.invoice_recipient_company_address || 'N/A' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   ACTION TAKEN\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nInvoice REJECTED  \n   Please review and correct the invoice data  \n   Resubmit after fixing the errors.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nValidated at: {{ $('Invoice Validator').item.json.validation.validatedAt }}\nAuto-generated: {{ $now.format('yyyy-MM-dd HH:mm:ss') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        624,
+        -544
+      ],
+      "id": "b0f8ccf8-c238-480f-8faa-304daeb63770",
+      "name": "Notify Validation Error",
+      "webhookId": "a39f27f0-542f-4cad-b1cf-8f01780e55e8",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gOpSSh0fESEacjJf",
+          "name": "Gmail account 5"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "save-invoice",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, ngrok-skip-browser-warning, Accept"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -960,
+        -48
+      ],
+      "id": "b1947587-2adf-4b80-800e-2a8d1971d14e",
+      "name": "Webhook: Save Validated Invoice",
+      "webhookId": "ef37acd2-96b8-4c65-b130-ccd84adef096"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  {\n    \"success\": true,\n    \"message\": \"Invoice successfully added to Fakturaxl accounting system\",\n    \"invoice_data\": {\n      \"invoice_number\": $('Invoice Validator').item.json.body.invoice_number,\n      \"issue_date\": $('Invoice Validator').item.json.body.invoice_issue_date,\n      \"company_issuer\": $('Invoice Validator').item.json.body.company_name_invoice_issuer,\n      \"company_recipient\": $('Invoice Validator').item.json.body.company_name_invoice_recipient,\n      \"net_amount\": $('Invoice Validator').item.json.body.net_amount,\n      \"gross_amount\": $('Invoice Validator').item.json.body.gross_amount,\n      \"vat_rate\": $('Invoice Validator').item.json.body.vat_rate + '%',\n      \"currency\": \"PLN\"\n    },\n    \"fakturaxl_response\": {\n      \"status\": $json.kod ? ($json.kod === '1' ? 'success' : 'error') : 'unknown',\n      \"raw_response\": $json\n    },\n    \"storage\": {\n      \"google_sheets\": \"Saved to main sheet and items sheet\",\n      \"fakturaxl\": \"Synchronized with external accounting system\"\n    },\n    \"next_steps\": \"Invoice is now available in your Fakturaxl dashboard\",\n    \"timestamp\": $now.toISO()\n  }\n}}",
+        "options": {
+          "responseCode": 201,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Accept, ngrok-skip-browser-warning"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        880,
+        96
+      ],
+      "id": "4ae2bac5-2d67-40d8-9a40-e67bde2ba3cc",
+      "name": "Response: Added to Fakturaxl"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0",
+          "mode": "list",
+          "cachedResultName": "OCR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 812983602,
+          "mode": "list",
+          "cachedResultName": "Invoice items",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1X1v-9hUdew1bhbf3n4Kw_vlJAbFr-PviRrFkShD1iv0/edit#gid=812983602"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "invoice_number": "={{ $json.invoice_number }}",
+            "product_name": "={{ $json.product_name }}",
+            "unit_price": "={{ $json.unit_price }}",
+            "quantity": "={{ $json.quantity }}",
+            "value": "={{ $json.value }}"
+          },
+          "matchingColumns": [
+            "invoice_number"
+          ],
+          "schema": [
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "product_name",
+              "displayName": "product_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "unit_price",
+              "displayName": "unit_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quantity",
+              "displayName": "quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "value",
+              "displayName": "value",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        704,
+        -208
+      ],
+      "id": "bcb6b6f7-37e7-46bd-a905-39c94e2cdbf1",
+      "name": "Save Invoice Items",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "74OtQSEyoA0ZgH3q",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## INVOICE INTAKE WEBHOOK\n\n### Receives validated invoice after user confirmation\n- CORS: Fully enabled\n- Response: Manual via Respond to Webhook Node\n- Input: Complete invoice JSON with body wrapper\n\n",
+        "height": 624,
+        "width": 752,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1232,
+        -240
+      ],
+      "typeVersion": 1,
+      "id": "b22c033d-f51d-49e9-b0cf-c4a2253a0ee2",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## AI-POWERED DUPLICATE CHECK\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n### - Fetches existing invoices from database\n### - Compares invoice numbers & amounts\n### - Uses AI for similarity scoring\n### - Flags duplicates (score ≥85%)\n### - Allows minor formatting variations",
+        "height": 624,
+        "width": 496,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -480,
+        -240
+      ],
+      "typeVersion": 1,
+      "id": "7f4511f4-a323-40cd-8f6c-fd0dd72a81df",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## DECISION LOGIC\n\n\n\n\n\n### IF validation fails:\n###  → Save to \"Failed OCR\" sheet\n###  → Send error notification\n###  → Return failure response\n\n### IF duplicate detected:\n###  → Send duplicate alert\n###  → Reject with duplicate response\n\n### IF all checks pass:\n###  → Proceed to save\n",
+        "height": 624,
+        "width": 336,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        16,
+        -240
+      ],
+      "typeVersion": 1,
+      "id": "c76e4752-a75b-4cf4-8de6-119e8d85d4b6",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "### Saves to Sheets",
+        "height": 192,
+        "width": 176
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        176,
+        192
+      ],
+      "typeVersion": 1,
+      "id": "5b8f6ad3-9d84-46d9-82c4-be4f9f107359",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "### Saves to Sheets\n\n\n\n\n\n\n\n\n\n\n\n### 1. Google Sheets (main invoice data)\n### 2. Google Sheets (line items breakdown)\n### 3. Failed validation → \"Failed OCR\" sheet + email",
+        "height": 320,
+        "width": 416
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        592,
+        -240
+      ],
+      "typeVersion": 1,
+      "id": "8ab1c787-4b37-4422-9c58-4ced3bafda32",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "## Sends detailed emails for:\n### - Duplicate invoices (with similarity score)\n### - Validation errors (with error details)\n### - Invalid Tax IDs (Issuer or Recipient)\n### Includes full invoice context for debugging\n",
+        "height": 368,
+        "width": 848,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        160,
+        -560
+      ],
+      "typeVersion": 1,
+      "id": "51dae4a9-4f37-4a9e-afab-87d696cd2628",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "## Splits invoice\n## Items\n\n\n\n\n\n### - Splits invoice into individual products\n### - Creates separate row for each item\n### - Keeps invoice number\n",
+        "height": 304,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        352,
+        -240
+      ],
+      "typeVersion": 1,
+      "id": "be5d5501-4151-4d1a-8720-d97ae8a6b1b6",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "## EXTERNAL ACCOUNTING SYNC\n### Sends XML to Fakturaxl:\n### - Invoice header (dates, parties, amounts)\n### - Line items (products, quantities, prices)\n",
+        "height": 176,
+        "width": 656,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        352,
+        64
+      ],
+      "typeVersion": 1,
+      "id": "11c41166-ff3b-43cc-8750-8157f4d0354c",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 144,
+        "width": 672
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        336,
+        240
+      ],
+      "typeVersion": 1,
+      "id": "4937abf1-3294-4476-b2f4-1107ac742a1e",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://program.fakturaxl.pl/api/dokument_dodaj.php",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "text/xml; charset=utf-8"
+            },
+            {
+              "name": "Accept-Encoding",
+              "value": "gzip, deflate"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/xml",
+        "body": "=<dokument>\n  <api_token>hUYomMwPm3B1s0a1qy7dP5tNWwBOKUHpshJJwuDYSTMyavQQGQs3JgFcfofYCEuQPJ398Zu0hBEfEowy</api_token>\n  \n  <typ_faktury>0</typ_faktury>\n  <obliczaj_wartosc_faktury_od>0</obliczaj_wartosc_faktury_od>\n  \n  <data_wystawienia>{{ $('Invoice Validator').item.json.body.invoice_issue_date }}</data_wystawienia>\n  <data_sprzedazy>{{ $('Invoice Validator').item.json.body.invoice_issue_date }}</data_sprzedazy>\n  <termin_platnosci_data>{{ $('Invoice Validator').item.json.body.invoice_issue_date }}</termin_platnosci_data>\n  \n  <rodzaj_platnosci>Przelew</rodzaj_platnosci>\n  <waluta>PLN</waluta>\n  <kurs>1</kurs>\n  <jezyk>0</jezyk>\n  \n  \n  <nabywca>\n    <firma_lub_osoba_prywatna>0</firma_lub_osoba_prywatna>\n    <nazwa>{{ $('Invoice Validator').item.json.body.company_name_invoice_recipient }}</nazwa>\n    <nip>{{ $('Invoice Validator').item.json.body.tax_identification_recipient?.toString().replace(/[^0-9]/g, '') || '' }}</nip>\n    <ulica_i_numer>{{ $('Invoice Validator').item.json.body.invoice_recipient_company_address || '' }}</ulica_i_numer>\n    <kraj>PL</kraj>\n  </nabywca>\n  \n  {{ $('Invoice Validator').item.json.body.product_name.map((name, i) => `\n  <faktura_pozycje>\n    <nazwa>${name}</nazwa>\n    <ilosc>${parseFloat($('Invoice Validator').item.json.body.quantity[i]).toFixed(3)}</ilosc>\n    <jm>szt.</jm>\n    <vat>${parseInt($('Invoice Validator').item.json.body.vat_rate || 23)}</vat>\n    <wartosc_netto>${parseFloat($('Invoice Validator').item.json.body.value[i]).toFixed(2)}</wartosc_netto>\n  </faktura_pozycje>`).join('') }}\n</dokument>",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        704,
+        96
+      ],
+      "id": "a1f39622-9d2a-46f2-80a9-99f6e60d8a38",
+      "name": "Add Invoice to Fakturaxl",
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  {\n    \"success\": false,\n    \"error_code\": \"DUPLICATE_INVOICE\",\n    \"message\": \"This invoice already exists in the database\",\n    \"duplicate_detection\": {\n      \"is_duplicate\": $items(\"Duplicate Detector\")[0].json.is_duplicate,\n      \"similarity_score\": $items(\"Duplicate Detector\")[0].json.similarity_score,\n      \"matched_invoice_number\": $items(\"Duplicate Detector\")[0].json.matched_invoice_number,\n      \"reason\": $items(\"Duplicate Detector\")[0].json.reason\n    },\n    \"submitted_invoice\": {\n      \"invoice_number\": $('Invoice Validator').item.json.body.invoice_number,\n      \"issue_date\": $('Invoice Validator').item.json.body.invoice_issue_date,\n      \"net_amount\": $('Invoice Validator').item.json.body.net_amount,\n      \"gross_amount\": $('Invoice Validator').item.json.body.gross_amount\n    },\n    \"action_required\": \"This invoice has already been processed. If this is a legitimate resubmission, please contact support.\",\n    \"timestamp\": $now.toISO()\n  }\n}}",
+        "options": {
+          "responseCode": 409,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Accept, ngrok-skip-browser-warning"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        816,
+        -384
+      ],
+      "id": "455437b4-ea1d-498b-92d7-f616b9953db3",
+      "name": "Response: Duplicate Detected"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  {\n    \"success\": false,\n    \"error_code\": \"VALIDATION_FAILED\",\n    \"message\": \"Invoice validation failed - mathematical errors detected\",\n    \"validation\": {\n      \"is_valid\": $('Invoice Validator').item.json.validation.isValid,\n      \"error_count\": $('Invoice Validator').item.json.validation.errorCount,\n      \"warning_count\": $('Invoice Validator').item.json.validation.warningCount,\n      \"errors\": $('Invoice Validator').item.json.validation.errors,\n      \"warnings\": $('Invoice Validator').item.json.validation.warnings\n    },\n    \"submitted_invoice\": {\n      \"invoice_number\": $('Invoice Validator').item.json.body.invoice_number || \"UNKNOWN\",\n      \"issue_date\": $('Invoice Validator').item.json.body.invoice_issue_date,\n      \"company_issuer\": $('Invoice Validator').item.json.body.company_name_invoice_issuer,\n      \"company_recipient\": $('Invoice Validator').item.json.body.company_name_invoice_recipient,\n      \"net_amount\": $('Invoice Validator').item.json.body.net_amount,\n      \"gross_amount\": $('Invoice Validator').item.json.body.gross_amount,\n      \"vat_rate\": $('Invoice Validator').item.json.body.vat_rate + \"%\"\n    },\n    \"action_required\": \"Please review and correct the validation errors listed above, then resubmit the invoice.\",\n    \"timestamp\": $now.toISO()\n  }\n}}",
+        "options": {
+          "responseCode": 409,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Accept, ngrok-skip-browser-warning"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        816,
+        -544
+      ],
+      "id": "e3875aa9-e248-4703-9754-36d325bed7d9",
+      "name": "Response: Validation Error"
+    },
+    {
+      "parameters": {
+        "content": "## MATHEMATICAL VALIDATION\n### - Verifies calculations (net + VAT = gross)\n### - Validates line item totals\n### - Checks required fields\n### - Ensures positive amounts\n### - Confirms VAT rates ",
+        "height": 624,
+        "width": 352,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -832,
+        -240
+      ],
+      "typeVersion": 1,
+      "id": "2c297f5c-398f-4f03-ba27-5028371e0d56",
+      "name": "Sticky Note10"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Duplicate Detector": {
+      "main": [
+        [
+          {
+            "node": "Check Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Duplicate Detector",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invoice Validator": {
+      "main": [
+        [
+          {
+            "node": "Get Existing Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Invoice Items": {
+      "main": [
+        [
+          {
+            "node": "Save Invoice Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Validation": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Validation Error",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save to Failed Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Main Sheet": {
+      "main": [
+        []
+      ]
+    },
+    "Save to Failed Sheet": {
+      "main": [
+        []
+      ]
+    },
+    "Notify Duplicate Found": {
+      "main": [
+        [
+          {
+            "node": "Response: Duplicate Detected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing Invoices": {
+      "main": [
+        [
+          {
+            "node": "Merge Invoice Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Notify Duplicate Found",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save to Main Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Invoice Items",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Add Invoice to Fakturaxl",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Invoice Data": {
+      "main": [
+        [
+          {
+            "node": "Duplicate Detector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Save Validated Invoice": {
+      "main": [
+        [
+          {
+            "node": "Merge Invoice Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Invoice Validator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Invoice Items": {
+      "main": [
+        []
+      ]
+    },
+    "Notify Validation Error": {
+      "main": [
+        [
+          {
+            "node": "Response: Validation Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Invoice to Fakturaxl": {
+      "main": [
+        [
+          {
+            "node": "Response: Added to Fakturaxl",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "a87549ff-d869-4529-90de-9fa6fb40b020",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4de8a13b1a92f934a2c777a93d52eceb8549afda747f6c680f227b748b6c36da"
+  },
+  "id": "pYiMbc5lJYjLKHrJ",
+  "tags": []
+}

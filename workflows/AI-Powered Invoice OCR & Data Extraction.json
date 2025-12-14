@@ -1,0 +1,1087 @@
+{
+  "name": "AI-Powered Invoice OCR & Data Extraction",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=https://api.mistral.ai/v1/files/{{ $json.id }}/url",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "expiry",
+              "value": "24"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -368,
+        320
+      ],
+      "id": "3f31388f-3415-44a6-80f8-2046d356ecf5",
+      "name": "Get Signed URL",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "q6tiEm69cZk9KO1J",
+          "name": "Mistral"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.mistral.ai/v1/ocr",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"mistral-ocr-latest\",\n  \"document\": {\n    \"type\": \"document_url\",\n    \"document_url\": \"{{ $json.url }}\"\n  },\n  \"include_image_base64\": true\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -224,
+        320
+      ],
+      "id": "3cbbdff0-1ed5-4a59-b126-a3f9343f7143",
+      "name": "Get OCR Result",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "q6tiEm69cZk9KO1J",
+          "name": "Mistral"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.mistral.ai/v1/files",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "purpose",
+              "value": "ocr"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "Document0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -512,
+        320
+      ],
+      "id": "6df2db54-eb2d-47fc-8efb-78dcc7651ca8",
+      "name": "Upload to Mistral",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "q6tiEm69cZk9KO1J",
+          "name": "Mistral"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cleans model response from Markdown and parses JSON\nconst modelOutput = items[0].json.text;\n\nfunction cleanAndParse(str) {\n  if (!str) return {};\n  let cleaned = str\n    .replace(/```json/g, '')\n    .replace(/```/g, '')\n    .trim();\n  \n  const first = cleaned.indexOf('{');\n  const last = cleaned.lastIndexOf('}');\n  \n  if (first !== -1 && last !== -1) {\n    cleaned = cleaned.substring(first, last + 1);\n  }\n\n  return JSON.parse(cleaned);\n}\n\ntry {\n  const data = cleanAndParse(modelOutput);\n  return [{ json: data }];\n} catch (error) {\n  return [{ json: { error: \"Extract JSON Parse Error\", raw: modelOutput } }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        320
+      ],
+      "id": "694779ac-ec6b-4149-bbbb-84f6044e31a6",
+      "name": "Clean & Normalize Data"
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "={{ \"name = \\\"Invoices_\" + $now.format(\"yyyy-MM\") + \"\\\" and mimeType = \\\"application/vnd.google-apps.folder\\\" and trashed = false\" }}",
+        "filter": {},
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -544,
+        0
+      ],
+      "id": "a5df2841-231f-4fb7-8dd9-9cd6986c0c09",
+      "name": "Search files and folders",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "fpV1lKlz47MsX9xy",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "name": "=Invoices_{{ $now.format('yyyy-MM') }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "root",
+          "cachedResultName": "/ (Root folder)"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -224,
+        112
+      ],
+      "id": "a576294a-fe7f-4a3b-bee4-532f154c72a4",
+      "name": "Create folder",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "fpV1lKlz47MsX9xy",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "Document0",
+        "name": "={{ $json.name }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        64,
+        0
+      ],
+      "id": "2b0d51ae-f47c-4d22-b3e6-35b704cd4287",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "fpV1lKlz47MsX9xy",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "pass-id",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "7ff2c285-fdd0-4d85-a648-0913f63ae574",
+              "name": "name",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -224,
+        -112
+      ],
+      "id": "44b240b2-3004-41bd-9133-a1fc0663147c",
+      "name": "Pass ID"
+    },
+    {
+      "parameters": {
+        "mode": "markdownToHtml",
+        "markdown": "={{ $json.pages.map((p, i) => `### Page ${i + 1}\\n\\n${p.markdown || \"_No markdown available_\"}`).join(\"\\n\\n---\\n\\n\") }}",
+        "destinationKey": "html",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.markdown",
+      "typeVersion": 1,
+      "position": [
+        -64,
+        320
+      ],
+      "id": "ff8a378b-2310-43d5-ad1e-ce4a69f2b5f6",
+      "name": "Convert OCR to Markdown"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=# Role\nYou are an OCR Correction Model.\n\n# Input JSON:\n{{ JSON.stringify($json, null, 2) }}\n\n# Task\nFix OCR errors:\n- Typos in company names\n- Broken NIP/VAT IDs\n- Invoice number format (e.g. FV-10/2025 → FV/10/2025)\n- Currency decimals (e.g. 12,0 → 12.00)\n- Remove invalid characters (| _ ° ~)\n- Split merged VAT: \"23460,00\" → 23% + 460.00\n- Remove spaces: \"3 500,00\" → 3500.00\n- Trust printed values (recalc only if diff >1 PLN)\n\n# Rules\n- Do NOT invent new data\n- Keep all original fields\n- Return corrected JSON only",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        448,
+        320
+      ],
+      "id": "39551a5a-a83a-4a14-acca-6c68b99fe17c",
+      "name": "AI: Fix OCR Errors"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cleans Markdown from second model before validation\nconst modelOutput = items[0].json.text;\n\nfunction cleanAndParse(str) {\n  if (!str) return {};\n  let cleaned = str\n    .replace(/```json/g, '')\n    .replace(/```/g, '')\n    .trim();\n  \n  const first = cleaned.indexOf('{');\n  const last = cleaned.lastIndexOf('}');\n  \n  if (first !== -1 && last !== -1) {\n    cleaned = cleaned.substring(first, last + 1);\n  }\n\n  return JSON.parse(cleaned);\n}\n\ntry {\n  const data = cleanAndParse(modelOutput);\n  return [{ json: data }];\n} catch (error) {\n  return [{ json: { error: \"OCR Parse Error\", raw: modelOutput } }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        320
+      ],
+      "id": "15fc6823-3330-492d-a04c-745f1922666c",
+      "name": "Parse AI Response to JSON"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "OCR",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*",
+          "binaryPropertyName": "Document",
+          "rawBody": true,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, ngrok-skip-browser-warning, Accept"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -672,
+        320
+      ],
+      "id": "c7ec6d8a-2730-4b2f-ae8d-0ecfe08b5c8a",
+      "name": "Webhook: Receive Invoice Upload",
+      "webhookId": "5355e3e2-2c67-4599-94b5-ae652d9a0c41"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9690c3a6-0e44-4c07-9ac5-8fd48a9f2909",
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -352,
+        0
+      ],
+      "id": "9e1f8a56-5a1e-4eb0-93d3-985e1c5385b6",
+      "name": "Check Folder Exists?"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -80,
+        0
+      ],
+      "id": "22fd45e0-c80c-4b5b-8903-245ad50cacc8",
+      "name": "Merge File Data"
+    },
+    {
+      "parameters": {
+        "content": "## FILE INTAKE & ARCHIVAL\n### - Receives invoice file via webhook\n### - Creates monthly folder (Invoices_YYYY-MM)\n### - Archives original document to Google Drive\n### - Prepares file for OCR processing\n\n\n",
+        "height": 800,
+        "width": 944,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -704,
+        -176
+      ],
+      "typeVersion": 1,
+      "id": "871728fe-0eee-4097-8498-9bff7810964f",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## MISTRAL OCR PIPELINE\n\n\n\n\n\n\n\n\n\n\n\n\n### - Uploads file to Mistral AI\n### - Generates signed URL\n### - Extracts text & structure from invoice\n### - Converts to Markdown format\n",
+        "height": 368,
+        "width": 624
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -560,
+        256
+      ],
+      "typeVersion": 1,
+      "id": "c41a3557-d543-42ae-a8c5-02db6262f9cd",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## INTELLIGENT DATA EXTRACTION\n\n\n\n\n\n\n\n\n\n\n### - AI extracts all invoice fields\n### - Cleans Markdown from first AI response\n### - AI fixes OCR errors (typos, tax identification number, formatting)\n### - Parses corrected JSON from second AI\n### - Returns structured JSON\n",
+        "height": 368,
+        "width": 768,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        64,
+        256
+      ],
+      "typeVersion": 1,
+      "id": "f290f94e-aad7-476e-809c-97b89a41042c",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "## API RESPONSE \n### - Response: OCR Complete (200)\n### - Triggered: When both Tax IDs are valid\n### - Returns: Full invoice data + validation flags\n### - Action: Frontend can proceed to save workflow\n\n\n### Response: Invalid Recipient NIP (400)\n### - Triggered: When Recipient Tax ID verification fails\n### - Returns: Error details + possible causes\n### - Action: User must verify and resubmit\n\n",
+        "height": 368,
+        "width": 560,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1808,
+        256
+      ],
+      "typeVersion": 1,
+      "id": "9edad326-78ea-492a-bd67-6779e3ff10f6",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=# Role\nYou are a precise Invoice Data Extraction API.\n\n# Source Document\n{{ $json.pages.map(page => page.markdown).join('\\n\\n') }}\n\n# Task\nExtract ALL data from the invoice above (Polish or English). Pay special attention to the product table - you MUST extract EVERY row.\n\n# Critical Rules\n1. product_name, unit_price, quantity, value MUST be arrays\n2. Count all rows in the product table first\n3. If table has 4 products, each array must have exactly 4 elements\n4. All 4 product arrays must have identical length\n5. Return ONLY valid JSON - no markdown, no code blocks, no explanations\n6. Start response with { and end with }\n7. Tax IDs (NIP/Tax ID) MUST BE STRINGS: Return exactly as seen (e.g., \"5260003210\"). Do not strip zeros.\n8. Tax ID length is usually 10 digits.\n\n# OCR Fixes & Mappings\n1. **Map Labels & IDs:** \"Tax ID\" = NIP, \"No.\" or \"nr.\" = Invoice Number. **Tax IDs (NIP/Tax ID) for both the issuer (Sprzedawca) and the recipient (Nabywca) MUST BE STRINGS and returned exactly as seen (e.g., \"5260003210\").**\n2. **Table Headers:** Map \"Qty\" to \"Quantity\", \"Cena netto\" to \"unit_price\", \"Ilość\" to \"quantity\", etc., if schema requires English keys.\n3. **Address Mapping:** Recognize \"ul.\" (ulica) as part of the street address line. Do not translate or modify it when extracting addresses.\n4. **Clean Quantity:** Preserve original units where present (e.g., \"10 godz\" or \"10 hrs\"). Only strip generic units like \"szt\" or \"pc\" if they clutter the number (e.g., \"1 szt\" → \"1\").\n5. **Clean Numbers:** Remove spaces and thousands separators (\"3 500,00\" or \"3,500.00\" → \"3500.00\").\n6. **Split Merged VAT:** \"23460,00\" → 23% + 460.00.\n7. Trust printed values (recalc only if diff >1 PLN).\n\n# Output Schema\n{\n  \"invoice_number\": \"The unique invoice identifier (e.g., FAK/001, FV/123/2025)\",\n  \"company_name_invoice_issuer\": \"Full legal name of seller/issuer company\",\n  \"company_name_invoice_recipient\": \"Full legal name of buyer/recipient company\",\n  \"invoice_issuer_company_address\": \"Complete address of issuer (street, postal code, city)\",\n  \"invoice_recipient_company_address\": \"Complete address of recipient (street, postal code, city)\",\n  \"tax_identification_issuer\": \"NIP/VAT ID of issuer (format: 1234567890)\",\n  \"tax_identification_recipient\": \"NIP/VAT ID of recipient (format: 1234567890)\",\n  \"invoice_issue_date\": \"Invoice date in YYYY-MM-DD format\",\n  \"net_amount\": \"Total net amount as string (e.g., 15550.00)\",\n  \"gross_amount\": \"Total gross amount as string (e.g., 19126.50)\",\n  \"vat_rate\": \"VAT percentage as string (e.g., 23)\",\n  \"product_name\": [\"Array of ALL product names from table\"],\n  \"unit_price\": [\"Array of ALL unit prices as strings\"],\n  \"quantity\": [\"Array of ALL quantities as strings\"],\n  \"value\": [\"Array of ALL line values as strings\"]\n}\n\n# Example Output\n{\n  \"invoice_number\": \"FAK/001\",\n  \"company_name_invoice_issuer\": \"Grove Company Ltd.\",\n  \"company_name_invoice_recipient\": \"Alpha Company Sp. z o.o.\",\n  \"invoice_issuer_company_address\": \"ul. Example 12, 00-001 Warszawa\",\n  \"invoice_recipient_company_address\": \"ul. Alfa 1, 00-002 Warszawa\",\n  \"tax_identification_issuer\": \"3606591609\",\n  \"tax_identification_recipient\": \"4443222776\",\n  \"invoice_issue_date\": \"2024-03-15\",\n  \"net_amount\": \"15550.00\",\n  \"gross_amount\": \"19126.50\",\n  \"vat_rate\": \"23\",\n  \"product_name\": [\"Laptop\", \"Keyboard\", \"Mouse\", \"Monitor\"],\n  \"unit_price\": [\"3500.00\", \"150.00\", \"80.00\", \"900.00\"],\n  \"quantity\": [\"3\", \"1\", \"5\", \"5\"],\n  \"value\": [\"10500.00\", \"150.00\", \"400.00\", \"4500.00\"]\n}",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        64,
+        320
+      ],
+      "id": "9780a575-0275-4e81-a417-f10d30d31e5f",
+      "name": "Extract Invoice"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4188afd4-112a-4ff0-afc2-26e871cbc946",
+              "leftValue": "={{ $json.result.subject !== null && $json.result.subject !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1008,
+        320
+      ],
+      "id": "6ed10869-0d17-4b89-864e-a27299db5e68",
+      "name": "Is NIP Valid?"
+    },
+    {
+      "parameters": {
+        "url": "=https://wl-api.mf.gov.pl/api/search/nip/{{ \n  $items(\"Parse AI Response to JSON\")[0].json.tax_identification_recipient\n    .toString()\n    .replace(/[^0-9]/g, '') \n}}?date={{ $now.format('yyyy-MM-dd') }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1168,
+        304
+      ],
+      "id": "9803bd28-f137-4204-b237-0d0abecd762f",
+      "name": "Verify Recipient",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4188afd4-112a-4ff0-afc2-26e871cbc946",
+              "leftValue": "={{ $json.nip_recipient_valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1504,
+        304
+      ],
+      "id": "2d68c2ee-8019-485b-917e-ffbaa46ec5db",
+      "name": "Is Recipient Valid?"
+    },
+    {
+      "parameters": {
+        "sendTo": "sebkaz.n8n@gmail.com",
+        "subject": "=DATA ERROR: Invalid Recipient Tax ID on invoice {{ $('Invoice Validator').item.json.body.invoice_number }}",
+        "message": "=ALERT: Incorrect recipient data detected on the processed invoice.\nTax ID verification in the database failed.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   INVOICE DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nInvoice Number:    {{ $('Invoice Validator').item.json.body.invoice_number }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   RECIPIENT DATA (FROM OCR)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nCompany Name:      {{ $('Invoice Validator').item.json.body.company_name_invoice_recipient }}\nTax ID (NIP):      {{ $('Invoice Validator').item.json.body.tax_identification_recipient }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   POSSIBLE CAUSES\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n1. OCR Error (system might have read a phone number as Tax ID)\n2. Invoice issued to a private individual (no Tax ID), but system expects B2B\n3. Typo in the Recipient's Tax ID on the document\n\nThe invoice has NOT been saved to the database.\n    Manual intervention required.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAuto-generated: {{ $now.format('yyyy-MM-dd HH:mm:ss') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        352
+      ],
+      "id": "951cf586-703e-4614-b843-cd12a87eb74a",
+      "name": "Email: Fake Recipient Company",
+      "webhookId": "e9176ec7-87ae-498f-b2dc-271c970e39e6",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gOpSSh0fESEacjJf",
+          "name": "Gmail account 5"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "sebkaz.n8n@gmail.com",
+        "subject": "=VALIDATION ERROR: Invalid Issuer Tax ID - {{ $('Invoice Validator').item.json.body.invoice_number }}",
+        "message": "=The system rejected the invoice due to failed verification of the Issuer's Tax ID in the Ministry of Finance (White List) database.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   INVOICE DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nInvoice Number:    {{ $('Invoice Validator').item.json.body.invoice_number || 'N/A' }}\nIssue Date:        {{ $('Invoice Validator').item.json.body.invoice_issue_date || 'N/A' }}\nNet Amount:        {{ $('Invoice Validator').item.json.body.net_amount || 'N/A' }} PLN\nGross Amount:      {{ $('Invoice Validator').item.json.body.gross_amount || 'N/A' }} PLN\nVAT Rate:          {{ $('Invoice Validator').item.json.body.vat_rate || 'N/A' }}%\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   ISSUER DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nTax ID (NIP):      {{ $('Invoice Validator').item.json.body.tax_identification_issuer || 'N/A' }}\nCompany Name:      {{ $('Invoice Validator').item.json.body.company_name_invoice_issuer || 'N/A' }}\nAddress:           {{ $('Invoice Validator').item.json.body.invoice_issuer_company_address || 'N/A' }}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n                   REJECTION REASON\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nThe provided Tax ID was not found in the active VAT payers database, \nor the API request limit has been reached.\n\nNEXT STEPS:\n1. Check if OCR misread the Tax ID digits.\n2. Verify if the company is VAT-exempt (and thus not listed).\n3. Review the invoice manually and resubmit if needed.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nAuto-generated: {{ $now.format('yyyy-MM-dd HH:mm:ss') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1392,
+        464
+      ],
+      "id": "d294957c-2ffd-4081-bcff-9f76cfaaab2c",
+      "name": "Email: Fake Issuer Company",
+      "webhookId": "50616611-3cad-4d5c-baa3-a3efc922d808",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gOpSSh0fESEacjJf",
+          "name": "Gmail account 5"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://wl-api.mf.gov.pl/api/search/nip/{{ $json.tax_identification_issuer.toString().replace(/[^0-9]/g, '') }}?date={{ $now.format('yyyy-MM-dd') }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        864,
+        320
+      ],
+      "id": "7d5a6c56-992a-4abb-b992-aeb457bf538e",
+      "name": "Validate Issuer NIP",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  {\n    \"success\": false,\n    \"error_code\": \"INVALID_ISSUER_TAX_ID\",\n    \"message\": \"The Issuer's Tax ID could not be verified in the Ministry of Finance database\",\n    \"details\": {\n      \"invoice_number\": $('Invoice Validator').item.json.invoice_number,\n      \"invalid_issuer_nip\": $('Invoice Validator').item.json.tax_identification_issuer,\n      \"company_name\": $('Invoice Validator').item.json.company_name_invoice_issuer\n    },\n    \"action_required\": \"Please verify the Issuer's Tax ID and resubmit\",\n    \"timestamp\": $now.toISO()\n  }\n}}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Accept, ngrok-skip-browser-warning"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1568,
+        464
+      ],
+      "id": "6abbd106-8440-4a94-a1ce-74f96950691c",
+      "name": "Response: Invalid Issuer NIP"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  {\n    \"success\": false,\n    \"error_code\": \"INVALID_RECIPIENT_TAX_ID\",\n    \"message\": \"The Recipient's Tax ID could not be verified in the Ministry of Finance database\",\n    \"details\": {\n      \"invoice_number\": $('Invoice Validator').item.json.invoice_number,\n      \"invalid_recipient_nip\": $('Invoice Validator').item.json.tax_identification_recipient,\n      \"company_name\": $('Invoice Validator').item.json.company_name_invoice_recipient\n    },\n    \"possible_causes\": [\n      \"OCR misread the Tax ID digits\",\n      \"Invoice issued to a private individual (no Tax ID)\",\n      \"Typo in the Recipient's Tax ID on the document\"\n    ],\n    \"action_required\": \"Please verify the Recipient's Tax ID and resubmit\",\n    \"timestamp\": $now.toISO()\n  }\n}}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Accept, ngrok-skip-browser-warning"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2208,
+        464
+      ],
+      "id": "a5f8f5c2-decf-49f6-a583-a42f2c09e761",
+      "name": "Response: Invalid Recipient NIP"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "3982c3b7-6dd0-44c4-ae44-b8e7e916687b",
+              "name": "nip_recipient_valid",
+              "value": "={{ $json.result.subject !== null }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1328,
+        304
+      ],
+      "id": "4440b692-68a8-47e5-8289-7260e005de24",
+      "name": "Set Recipient NIP Valid"
+    },
+    {
+      "parameters": {
+        "content": "## TAX ID VERIFICATION (WHITE LIST)\n\n\n\n\n\n\n\n\n\n\n\n### - Validates Issuer Tax ID Number against Ministry of Finance database\n### - Verifies Recipient Tax ID Number\n### - Sends email alerts for invalid IDs\n### - Prevents processing fake companies\n### - Detects OCR Tax ID errors",
+        "height": 368,
+        "width": 976,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        832,
+        256
+      ],
+      "typeVersion": 1,
+      "id": "01c2cd25-9000-4f5b-b05f-16bc326e87d9",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        624,
+        480
+      ],
+      "id": "e51c93b0-8689-4dd3-9a55-765d9ebc10ab",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "hsltzUFSYRibxBnf",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  JSON.stringify({\n    ...$items(\"Parse AI Response to JSON\")[0].json,\n    nip_recipient_valid: $json.nip_recipient_valid ?? false,\n    nip_issuer_valid: true,\n    white_list_data: $json\n  })\n}}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Accept, ngrok-skip-browser-warning"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2208,
+        288
+      ],
+      "id": "3e0784b7-61b0-4d95-9c32-22f29743635e",
+      "name": "Response: OCR Complete"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Signed URL": {
+      "main": [
+        [
+          {
+            "node": "Get OCR Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get OCR Result": {
+      "main": [
+        [
+          {
+            "node": "Convert OCR to Markdown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to Mistral": {
+      "main": [
+        [
+          {
+            "node": "Get Signed URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean & Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "AI: Fix OCR Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search files and folders": {
+      "main": [
+        [
+          {
+            "node": "Check Folder Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create folder": {
+      "main": [
+        [
+          {
+            "node": "Merge File Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Pass ID": {
+      "main": [
+        [
+          {
+            "node": "Merge File Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Convert OCR to Markdown": {
+      "main": [
+        [
+          {
+            "node": "Extract Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Fix OCR Errors": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response to JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response to JSON": {
+      "main": [
+        [
+          {
+            "node": "Validate Issuer NIP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Receive Invoice Upload": {
+      "main": [
+        [
+          {
+            "node": "Upload to Mistral",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Search files and folders",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge File Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Folder Exists?": {
+      "main": [
+        [
+          {
+            "node": "Pass ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge File Data": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Invoice": {
+      "main": [
+        [
+          {
+            "node": "Clean & Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is NIP Valid?": {
+      "main": [
+        [
+          {
+            "node": "Verify Recipient",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email: Fake Issuer Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Recipient": {
+      "main": [
+        [
+          {
+            "node": "Set Recipient NIP Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Recipient Valid?": {
+      "main": [
+        [
+          {
+            "node": "Response: OCR Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email: Fake Recipient Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: Fake Recipient Company": {
+      "main": [
+        [
+          {
+            "node": "Response: Invalid Recipient NIP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: Fake Issuer Company": {
+      "main": [
+        [
+          {
+            "node": "Response: Invalid Issuer NIP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Issuer NIP": {
+      "main": [
+        [
+          {
+            "node": "Is NIP Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Recipient NIP Valid": {
+      "main": [
+        [
+          {
+            "node": "Is Recipient Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Extract Invoice",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "AI: Fix OCR Errors",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1d424e7c-31f8-4221-a5db-7ef8142a6885",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4de8a13b1a92f934a2c777a93d52eceb8549afda747f6c680f227b748b6c36da"
+  },
+  "id": "4wedc9pM7ecrQylY",
+  "tags": []
+}

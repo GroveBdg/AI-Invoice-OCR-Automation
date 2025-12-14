@@ -1,0 +1,262 @@
+# -------------------------------
+# CRITICAL: Never commit sensitive data
+# -------------------------------
+# API Keys, Tokens, and Secrets
+.env
+.env.*
+*.env
+!.env.example
+credentials.json
+*-credentials.json
+secrets.json
+config.local.json
+
+# n8n specific credentials and execution data
+n8n-credentials/
+*.credentials.json
+.n8n/
+n8n.db
+n8n.db-*
+.n8n-backup/
+executions/
+execution-data/
+
+# API tokens and keys
+*api-key*
+*api_key*
+*token*
+*secret*
+*-token.txt
+api-keys/
+
+# Mistral AI
+mistral-api-key*
+.mistral/
+
+# Groq
+groq-api-key*
+.groq/
+
+# Fakturaxl
+fakturaxl-token*
+fakturaxl-api*
+
+# -------------------------------
+# Workflow backups (may contain credentials)
+# -------------------------------
+*.json.backup
+*-backup.json
+workflow-exports/
+n8n-exports/
+
+# -------------------------------
+# Node.js dependencies
+# -------------------------------
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.pnpm-store/
+.npm/
+
+# -------------------------------
+# Build outputs
+# -------------------------------
+dist/
+build/
+out/
+.next/
+.nuxt/
+.output/
+.parcel-cache/
+.cache/
+
+# -------------------------------
+# Logs
+# -------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pnpm-debug.log*
+n8n-debug.log*
+error.log
+combined.log
+
+# -------------------------------
+# OS system files
+# -------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# -------------------------------
+# IDE and editor specific files
+# -------------------------------
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.project
+.settings/
+.classpath
+.c9/
+.vimrc
+.editorconfig
+
+# -------------------------------
+# Temporary files and caches
+# -------------------------------
+*.tmp
+*.temp
+.cache/
+.turbo/
+.eslintcache
+.stylelintcache
+.sass-cache/
+
+# -------------------------------
+# Testing
+# -------------------------------
+coverage/
+.nyc_output/
+*.test.json
+test-output/
+test-results/
+playwright-report/
+e2e-results/
+.jest-cache/
+
+# -------------------------------
+# Database files
+# -------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
+# -------------------------------
+# Backup files
+# -------------------------------
+*.bak
+*.backup
+*.old
+*_backup
+*_old
+*.save
+
+# -------------------------------
+# Google Cloud / GCP
+# -------------------------------
+google-credentials.json
+service-account.json
+gcloud-config.json
+google-oauth-token.json
+.gcloud/
+
+# -------------------------------
+# SSL Certificates (if storing locally)
+# -------------------------------
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+*.cer
+ssl/
+certs/
+
+# -------------------------------
+# Docker (if used for n8n deployment)
+# -------------------------------
+docker-compose.override.yml
+.docker/
+.dockerignore
+
+# -------------------------------
+# Environment specific
+# -------------------------------
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.staging
+
+# -------------------------------
+# Invoice Processing Specific
+# -------------------------------
+# Uploaded invoices (originals should be in Google Drive)
+uploads/
+temp-invoices/
+processed-invoices/
+failed-invoices/
+
+# OCR processing cache
+ocr-cache/
+mistral-cache/
+
+# Exported data (should be in Google Sheets)
+exports/
+csv-exports/
+*.csv
+!samples/**/*.csv
+
+# Generated reports
+reports/
+invoice-reports/
+*.xlsx
+!samples/**/*.xlsx
+
+# -------------------------------
+# Large media files (shouldn't be in repo)
+# -------------------------------
+*.pdf
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+
+# Exception: Keep sample/demo files and documentation assets
+!samples/**/*.pdf
+!docs/**/*.pdf
+!assets/**/*.png
+!assets/**/*.jpg
+!assets/**/*.jpeg
+!README_assets/**/*
+
+# -------------------------------
+# Miscellaneous
+# -------------------------------
+.history/
+.metals/
+.bloop/
+.vercel
+.serverless/
+
+# Email templates (if they contain sensitive data)
+email-templates-with-data/
+
+# Test data (if it contains real invoice information)
+test-data-real/
+real-invoices/
